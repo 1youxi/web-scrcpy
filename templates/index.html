@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="/static/css/font-awesome.min.css" rel="stylesheet">
+    <title>Web server for scrcpy</title>
+    <style>
+        body {
+            margin: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            background-color: #333;
+        }
+
+        .video-wrapper {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+        }
+
+        video {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            max-width: 100%;
+            max-height: 100%;
+            width: auto;
+            height: auto;
+            background: black;
+        }
+
+        #status {
+            font-family: Arial, sans-serif;
+            color: #333;
+        }
+
+        .icon-container {
+            display: flex;
+            gap: 10px;
+            width: 100%;
+        }
+
+        .icon {
+            padding: 6px;
+            font-size: 18px;
+            cursor: pointer;
+            color: #eee;
+            transition: color 0.3s ease;
+        }
+
+        .icon:hover {
+            color: #007BFF;
+        }
+
+        .icon-container i:nth-child(4) {
+            margin-left: auto;
+        }
+    </style>
+    <script src="/static/js/socket.io.js"></script>
+    <script src="/static/js/input.js"></script>
+    <script src="/static/js/exp-golomb.js"></script>
+    <script src="/static/js/h264-sps-parser.js"></script>
+    <script src="/static/js/video_parser.js"></script>
+</head>
+
+<body>
+    <p id="status" style="display: none;">connecting to device...</p>
+    <div class="icon-container">
+        <i id="power-icon" class="fa-solid fa-power-off icon"></i>
+        <i id="volume-down-icon" class="fa-solid fa-volume-down icon"></i>
+        <i id="volume-up-icon" class="fa-solid fa-volume-up icon"></i>
+        <i id="back-icon" class="fa-solid fa-arrow-left icon"></i>
+        <i id="home-icon" class="fa-solid fa-house icon"></i>
+        <i id="menu-icon" class="fa-solid fa-bars icon"></i>
+    </div>
+    <div class="video-wrapper">
+        <video id="player" autoplay muted webkit-playsinline playsinline x5-playsinline></video>
+    </div>
+    <script src="/static/js/jmuxer.min.js"></script>
+    <script>
+        const videoElement = document.getElementById('player');
+        const jmuxer = new JMuxer({
+            node: 'player',
+            mode: 'video',
+            flushingTime: 0,
+            fps: 60,
+            clearBuffer: true,
+            onReady: () => {
+                document.getElementById('status').textContent = 'MSE done, waiting for data...';
+                if (videoElement) {
+                    videoElement.controls = false;
+                    videoElement.style.cssText = `
+                        -webkit-media-controls: none !important;
+                        -webkit-media-controls-enclosure: none !important;
+                        -webkit-media-controls-panel: none !important;
+                        -webkit-media-controls-play-button: none !important;
+                        -webkit-media-controls-timeline: none !important;
+                        -webkit-media-controls-current-time-display: none !important;
+                        -webkit-media-controls-time-remaining-display: none !important;
+                        -webkit-media-controls-mute-button: none !important;
+                        -webkit-media-controls-volume-slider: none !important;
+                        -webkit-media-controls-fullscreen-button: none !important;
+                        -moz-controls: none !important;
+                        -ms-media-controls: none !important;
+                    `;
+                }
+            },
+            onError: (err) => {
+                document.getElementById('status').textContent = 'MSE Error: ' + err.message;
+            }
+        });
+
+        const socket = io({
+            reconnection: false,
+            autoConnect: true
+        });
+
+        var input = null;
+        function initInput(width, height) {
+            function input_data_cb(data) {
+                socket.emit('control_data', data);
+            }
+
+            input = new ScrcpyInput(input_data_cb, videoElement, width, height, false);
+
+            const powerIcon = document.getElementById('power-icon');
+            const volumeDownIcon = document.getElementById('volume-down-icon');
+            const volumeUpIcon = document.getElementById('volume-up-icon');
+            const backUpIcon = document.getElementById('back-icon');
+            const homeUpIcon = document.getElementById('home-icon');
+            const menuUpIcon = document.getElementById('menu-icon');
+
+            powerIcon.addEventListener('mousedown', function () {
+                input.screen_on_off(0);
+            });
+            powerIcon.addEventListener('mouseup', function () {
+                input.screen_on_off(1);
+            });
+
+            volumeDownIcon.addEventListener('mousedown', (event) => {
+                input.snedKeyCode(event, 0, 25);
+            });
+            volumeDownIcon.addEventListener('mouseup', (event) => {
+                input.snedKeyCode(event, 1, 25);
+            });
+
+            volumeUpIcon.addEventListener('mousedown', (event) => {
+                input.snedKeyCode(event, 0, 24);
+            });
+            volumeUpIcon.addEventListener('mouseup', (event) => {
+                input.snedKeyCode(event, 1, 24);
+            });
+
+            backUpIcon.addEventListener('mousedown', (event) => {
+                input.snedKeyCode(event, 0, 4);
+            });
+            backUpIcon.addEventListener('mouseup', (event) => {
+                input.snedKeyCode(event, 1, 4);
+            });
+            homeUpIcon.addEventListener('mousedown', (event) => {
+                input.snedKeyCode(event, 0, 3);
+            });
+            homeUpIcon.addEventListener('mouseup', (event) => {
+                input.snedKeyCode(event, 1, 3);
+            });
+            menuUpIcon.addEventListener('mousedown', (event) => {
+                input.snedKeyCode(event, 0, 187);
+            });
+            menuUpIcon.addEventListener('mouseup', (event) => {
+                input.snedKeyCode(event, 1, 187);
+            });
+        }
+
+        const parser = new VideoParser(({ type, data }) => {
+            if (type === 'nalu') {
+                jmuxer.feed({
+                    video: data
+                });
+            } else if (type === 'init') {
+                jmuxer.feed({
+                    video: data["sps"]
+                });
+                jmuxer.feed({
+                    video: data["pps"]
+                });
+            } else if (type === 'screen_size') {
+                initInput(data["width"], data["height"]);
+            } else if (type === 'size_change') {
+                if (input) {
+                    input.resizeScreen(data["width"], data["height"]);
+                }
+            }
+        });
+
+        socket.on('video_data', (data) => {
+            const newData = new Uint8Array(data);
+            parser.appendData(newData);
+        });
+
+        socket.on('connect', () => {
+            document.getElementById('status').textContent = 'connected, receiving video data...';
+        });
+
+        socket.addEventListener('close', () => {
+            document.getElementById('status').textContent = 'connect closed, please refresh the page to reconnect';
+        });
+
+        socket.addEventListener('error', (error) => {
+            document.getElementById('status').textContent = 'websocket error: ' + error.message;
+        });
+
+        window.addEventListener('beforeunload', () => {
+            socket.disconnect();
+        });
+    </script>
+</body>
+
+</html>
