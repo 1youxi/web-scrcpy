@@ -6,7 +6,8 @@ import time
 ADB_PATH = "adb"
 SCRCPY_SERVER_PATH = "scrcpy-server"
 DEVICE_SERVER_PATH = "/data/local/tmp/scrcpy-server.jar"
-LOCAL_PORT = 5555
+# 避免与 Android 模拟器使用的本机 5554/5555 端口对冲，使用 scrcpy 默认端口 27183
+LOCAL_PORT = 27183
 
 class Scrcpy:
     def __init__(self):
@@ -30,6 +31,11 @@ class Scrcpy:
 
     def setup_adb_forward(self):
         print(f"Setting up ADB forward: tcp:{LOCAL_PORT} -> localabstract:scrcpy")
+        # 先尝试移除已有的同端口转发，避免残留导致失败（忽略错误）
+        try:
+            subprocess.run([ADB_PATH, "forward", "--remove", f"tcp:{LOCAL_PORT}"], capture_output=True)
+        except Exception:
+            pass
         subprocess.run([ADB_PATH, "forward", f"tcp:{LOCAL_PORT}", "localabstract:scrcpy"], check=True)
 
     def start_server(self):
@@ -50,31 +56,67 @@ class Scrcpy:
 
     def receive_video_data(self):
         print("Receiving video data (H.264)...")
-        self.video_socket.recv(1)
-        while not self.stop:
-            data = self.video_socket.recv(20480)
-            if not data:
-                break
-            self.video_callback(data)
+        try:
+            self.video_socket.settimeout(0.5)
+            try:
+                self.video_socket.recv(1)
+            except (TimeoutError, socket.timeout):
+                pass
+            while not self.stop:
+                try:
+                    data = self.video_socket.recv(20480)
+                except (TimeoutError, socket.timeout):
+                    continue
+                except (OSError, ConnectionAbortedError, ConnectionResetError):
+                    break
+                if not data:
+                    break
+                self.video_callback(data)
+        except Exception:
+            pass
         print("Video data reception stopped")
 
     def receive_audio_data(self):
         print("Receiving audio data...")
-        self.audio_socket.recv(1)
-        while not self.stop:
-            data = self.audio_socket.recv(1024)
-            if not data:
-                break
+        try:
+            self.audio_socket.settimeout(0.5)
+            try:
+                self.audio_socket.recv(1)
+            except (TimeoutError, socket.timeout):
+                pass
+            while not self.stop:
+                try:
+                    data = self.audio_socket.recv(1024)
+                except (TimeoutError, socket.timeout):
+                    continue
+                except (OSError, ConnectionAbortedError, ConnectionResetError):
+                    break
+                if not data:
+                    break
+        except Exception:
+            pass
         print("Audio data reception stopped")
 
     def handle_control_conn(self):
         print("Control connection established (idle)...")
-        self.control_socket.recv(1)
-        while not self.stop:
-            data = self.control_socket.recv(1024)
-            if not data:
-                break
-            print("Control Mesg:", data)
+        try:
+            self.control_socket.settimeout(0.5)
+            try:
+                self.control_socket.recv(1)
+            except (TimeoutError, socket.timeout):
+                pass
+            while not self.stop:
+                try:
+                    data = self.control_socket.recv(1024)
+                except (TimeoutError, socket.timeout):
+                    continue
+                except (OSError, ConnectionAbortedError, ConnectionResetError):
+                    break
+                if not data:
+                    break
+                print("Control Mesg:", data)
+        except Exception:
+            pass
         print("Control connection stopped")
 
     def scrcpy_start(self, video_callback, video_bit_rate):
@@ -123,18 +165,78 @@ class Scrcpy:
     def scrcpy_stop(self):
         print("Stopping Scrcpy")
         self.stop = True
-        self.video_socket.shutdown(socket.SHUT_RDWR)
-        self.control_socket.shutdown(socket.SHUT_RDWR)
-        self.video_socket.shutdown(socket.SHUT_RDWR)
-        self.audio_socket.close()
-        self.control_socket.close()
-        self.video_socket.close()
+        # 逐个安全关闭，避免重复关闭导致的 WinError 10038
+        try:
+            if self.video_socket:
+                try:
+                    self.video_socket.shutdown(socket.SHUT_RDWR)
+                except Exception:
+                    pass
+        finally:
+            try:
+                if self.video_socket:
+                    self.video_socket.close()
+            except Exception:
+                pass
 
-        self.video_thread.join()
-        self.audio_thread.join()
-        self.control_thread.join()
-        self.android_process.terminate()
-        self.android_thread.join()
+        try:
+            if self.audio_socket:
+                try:
+                    self.audio_socket.shutdown(socket.SHUT_RDWR)
+                except Exception:
+                    pass
+        finally:
+            try:
+                if self.audio_socket:
+                    self.audio_socket.close()
+            except Exception:
+                pass
+
+        try:
+            if self.control_socket:
+                try:
+                    self.control_socket.shutdown(socket.SHUT_RDWR)
+                except Exception:
+                    pass
+        finally:
+            try:
+                if self.control_socket:
+                    self.control_socket.close()
+            except Exception:
+                pass
+
+        try:
+            if self.video_thread:
+                self.video_thread.join()
+        except Exception:
+            pass
+        try:
+            if self.audio_thread:
+                self.audio_thread.join()
+        except Exception:
+            pass
+        try:
+            if self.control_thread:
+                self.control_thread.join()
+        except Exception:
+            pass
+
+        try:
+            if self.android_process:
+                self.android_process.terminate()
+        except Exception:
+            pass
+        try:
+            if self.android_thread:
+                self.android_thread.join()
+        except Exception:
+            pass
+
+        # 清理 adb 端口转发，避免残留
+        try:
+            subprocess.run([ADB_PATH, "forward", "--remove", f"tcp:{LOCAL_PORT}"])
+        except Exception:
+            pass
         print("Scrcpy stopped")
 
     def scrcpy_send_control(self, data):

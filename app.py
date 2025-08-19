@@ -68,4 +68,4 @@ if __name__ == '__main__':
     parser.add_argument('--video_bit_rate', default="1024000", help='scrcpy video bit rate')
     args = parser.parse_args()
     video_bit_rate = args.video_bit_rate
-    socketio.run(app, host='0.0.0.0', port=5000)
+    socketio.run(app, host='0.0.0.0', port=5001)
